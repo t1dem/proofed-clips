@@ -1,0 +1,58 @@
+name: Proofed
+
+# One workflow for everything Proofed does on a PR:
+# - every push to a PR: Kane checks the affected scenarios in Chrome;
+# - "/proofed" in a comment: check again; "/proofed <what to check>": check just that;
+# - "/proofed fix [model] [effort]", or ticking the fix checkbox in the report: the selected provider fixes it.
+on:
+  pull_request:
+  issue_comment:
+    types: [created, edited]
+
+permissions:
+  contents: write # clips go to the proofed-clips branch, fixes to the PR's branch
+  pull-requests: write
+  issues: write
+  statuses: write
+  # Lets Proofed's server push the fix commit as the Proofed app, so the workflows on it run without an approval.
+  # If the server can't push, GITHUB_TOKEN does, and those workflows wait for an approval.
+  id-token: write
+
+jobs:
+  proofed:
+    name: Proofed
+    # Comments count only from people with write access: the run uses this repo's keys on the PR's code.
+    # An edit counts only on Proofed's own report, which only people with write access can tick.
+    if: >-
+      github.event_name == 'pull_request' || (
+        github.event.issue.pull_request && ((
+          github.event.action == 'created' &&
+          contains(github.event.comment.body, '/proofed') &&
+          contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association)
+        ) || (
+          github.event.action == 'edited' &&
+          github.event.comment.user.type == 'Bot' &&
+          contains(github.event.comment.body, '<!-- proofed -->') &&
+          (contains(github.event.comment.body, '- [x] **Fix with Claude**') || contains(github.event.comment.body, '- [x] **Fix with Codex**'))
+        ))
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    concurrency:
+      group: proofed-${{ github.event.pull_request.number || github.event.issue.number }}
+      # A new push makes the running check stale; a comment waits for the run in progress. So does the run
+      # on the fix, pushed by the Proofed app: the fix run is still reporting on that commit.
+      cancel-in-progress: ${{ github.event_name == 'pull_request' && github.actor != 'proofed-by-kane[bot]' }}
+    steps:
+      - uses: t1dem/proofed@main
+        with:
+          url: http://localhost:4173
+          install: true
+          build: true
+          serve: npx --yes serve@14 -l 4173 .
+          lt-username: ${{ secrets.LT_USERNAME }}
+          lt-access-key: ${{ secrets.LT_ACCESS_KEY }}
+          claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          codex-api-key: ${{ secrets.CODEX_API_KEY }}
+          # Settings from the Proofed dashboard, such as the fixer provider and model.
+          vars: ${{ toJSON(vars) }}
